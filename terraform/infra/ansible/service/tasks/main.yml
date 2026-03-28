@@ -1,0 +1,316 @@
+---
+# tasks file for monitoring
+- name: Add docker repo key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add docker to sources.list.d
+  apt_repository:
+    repo: deb https://download.docker.com/linux/ubuntu jammy stable
+    state: present
+
+- name: Install packages
+  apt:
+    name:
+      - containerd.io
+      - docker-ce
+      - docker-compose-plugin
+      - curl 
+    state: present
+    update_cache: yes
+
+- name: Create docker-compose directory
+  file:
+    path: /opt/monitoring
+    state: directory
+    owner: root
+    group: root
+    mode: '0777'
+
+- name: Create docker-compose.yml
+  copy:
+    dest: /opt/monitoring/docker-compose.yml
+    content: |
+      version: '3.8'
+      services:
+        prometheus:
+          image: prom/prometheus:latest
+          container_name: prometheus
+          restart: always
+          volumes:
+            - ./prometheus/:/etc/prometheus/
+            - prometheus_data:/prometheus
+          command:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+          ports:
+            - 9090:9090
+
+        alertmanager:
+          image: prom/alertmanager:latest
+          container_name: alertmanager
+          restart: always
+          volumes:
+            - ./alertmanager/:/etc/alertmanager/
+          command:
+            - '--config.file=/etc/alertmanager/config.yml'
+          ports:
+            - 9093:9093
+
+        grafana:
+          image: grafana/grafana:latest
+          container_name: grafana
+          restart: always
+          depends_on:
+            - prometheus
+          ports:
+            - 3000:3000
+          volumes:
+            - grafana_data:/var/lib/grafana
+
+        node-exporter:
+          image: prom/node-exporter:latest
+          container_name: node-exporter
+          restart: always
+          volumes:
+            - /proc:/host/proc:ro
+            - /sys:/host/sys:ro
+            - /:/rootfs:ro
+          command:
+            - '--path.procfs=/host/proc'
+            - '--path.sysfs=/host/sys'
+            - '--path.rootfs=/rootfs'
+          ports:
+            - 9100:9100
+
+        blackbox-exporter:
+          image: prom/blackbox-exporter:latest
+          container_name: blackbox-exporter
+          restart: always
+          ports:
+            - 9115:9115
+          volumes:
+            - ./blackbox/:/etc/blackbox_exporter/
+
+        loki:
+          image: grafana/loki:latest
+          container_name: loki
+          restart: always
+          ports:
+            - 3100:3100
+          volumes:
+            - ./loki/:/etc/loki/
+            - loki_data:/loki
+      volumes:
+        loki_data:
+        grafana_data:
+        prometheus_data:
+
+- name: Create prometheus config directory
+  file:
+    path: /opt/monitoring/prometheus
+    state: directory
+
+- name: Create directories for monitoring configs and give them permissions
+  file:
+    path: "/opt/monitoring/{{ item }}"
+    state: directory
+    mode: '0777'
+  with_items:
+    - ""
+    - "loki"
+    - "blackbox"
+    - "prometheus"
+    - "alertmanager"
+
+- name: Create loki config
+  copy:
+    dest: /opt/monitoring/loki/local-config.yaml
+    content: |
+      auth_enabled: false
+      server:
+        http_listen_port: 3100
+      common:
+        path_prefix: /loki
+        storage:
+          filesystem:
+            chunks_directory: /loki/chunks
+            rules_directory: /loki/rules
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+      schema_config:
+        configs:
+          - from: 2024-01-01
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+
+- name: Create blackbox exporter config
+  copy:
+    dest: /opt/monitoring/blackbox/config.yml
+    content: |
+      modules:
+        http_2xx:
+          prober: http
+          timeout: 5s
+          http:
+            valid_status_codes: []
+            method: GET
+            tls_config:
+              insecure_skip_verify: true
+
+- name: Create prometheus.yml config
+  copy:
+    dest: /opt/monitoring/prometheus/prometheus.yml
+    content: |
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+
+      rule_files:
+        - "alerts.yml"
+
+      alerting:
+        alertmanagers:
+          - static_configs:
+            - targets:
+              - "alertmanager:9093"
+      scrape_configs:
+        - job_name: 'nodes'
+          static_configs:
+            - targets:
+                - 'node-exporter:9100'
+                - '{{ hostvars["master"]["ansible_host"] }}:9100'
+                - '{{ hostvars["worker1"]["ansible_host"] }}:9100'
+                - '{{ hostvars["worker2"]["ansible_host"] }}:9100'
+
+        - job_name: 'blackbox'
+          metrics_path: /probe
+          params:
+            module: [http_2xx]
+          static_configs:
+            - targets:
+                - 'http://{{ hostvars["worker1"]["ansible_host"] }}:5000'
+                - 'http://{{ hostvars["worker2"]["ansible_host"] }}:5000'
+          relabel_configs:
+            - source_labels: [__address__]
+              target_label: __param_target
+            - source_labels: [__param_target]
+              target_label: instance
+            - target_label: __address__
+              replacement: 'blackbox-exporter:9115'
+
+- name: Create alertmanager directory
+  file:
+    path: /opt/monitoring/alertmanager
+    state: directory
+
+- name: Create alertmanager config
+  copy:
+    dest: /opt/monitoring/alertmanager/config.yml
+    content: |
+      global:
+        resolve_timeout: 5m
+      route:
+        group_by: [...]
+        group_wait: 10s
+        group_interval: 5m
+        repeat_interval: 1h
+        receiver: 'telegram-notifications'
+
+      receivers:
+      - name: 'telegram-notifications'
+        telegram_configs:
+        - bot_token: {{ telegram_token }}
+          chat_id: {{ telegram_chat_id }}
+          send_resolved: true
+          parse_mode: 'HTML'
+          message: |
+            {% raw %}
+            {{ if eq .Status "firing" }}<b>Ошибка!</b>{{ else }}<b>Всё в порядке!</b>{{ end }}
+            <b>Алерт:</b> {{ .GroupLabels.alertname }}
+            {{ range .Alerts }}
+            <b>Описание:</b> {{ .Annotations.description }}
+            <b>Сервер:</b> {{ .Labels.instance }}
+            {{ end }}
+            {% endraw %}
+
+- name: Create prometheus alerts rules
+  copy:
+    dest: /opt/monitoring/prometheus/alerts.yml
+    content: |
+      groups:
+        - name: test_alerts
+          rules:
+            - alert: SiteDown
+              expr: probe_success == 0
+              for: 1m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Сайт недоступен"
+                description: "Cайт не отвечает больше 1 минуты."
+
+- name: Run docker compose stack
+  shell: docker compose -f /opt/monitoring/docker-compose.yml up -d
+
+- name: Install java
+  apt:
+    name:
+      - fontconfig
+      - openjdk-21-jre
+    update_cache: yes
+
+- name: Download jenkins gpg key
+  get_url:
+    url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+    dest: /etc/apt/keyrings/jenkins-keyring.asc
+    mode: '0777'
+
+- name: Add jenkins repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+    state: present
+    filename: jenkins
+
+- name: Install jenkins
+  apt:
+    name: jenkins
+    state: present
+    update_cache: yes
+
+- name: Add jenkins user to docker group
+  user:
+    name: jenkins
+    groups: docker
+    append: yes
+
+- name: Add kubernetes repo key
+  apt_key:
+    url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
+    state: present
+
+- name: Add kubernetes to sources.list.d
+  apt_repository:
+    repo: deb https://pkgs.k8s.io/core:/stable:/v1.30/deb/ / 
+    state: present
+
+- name: Install kubernetes
+  apt:
+    update_cache: yes
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl      
+    state: present
+
+- name: Launch kubernetes
+  systemd:
+    name: kubelet
+    enabled: yes
+    state: restarted

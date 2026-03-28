@@ -1,0 +1,55 @@
+---
+#Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-credit-calc
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-credit-calc
+  template:
+    metadata:
+      labels:
+        app: ai-credit-calc
+    spec:
+      containers:
+      - name: ai-credit-calc
+        image: angel04ek/ai_credit_calc:latest
+        ports:
+        - containerPort: 5000
+
+---
+#Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-credit-calc-service
+spec:
+  selector:
+    app: ai-credit-calc
+  ports:
+  - port: 80
+    targetPort: 5000
+    nodePort: 30080
+  type: NodePort
+
+---
+#Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-credit-calc-ingress
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-credit-calc-service
+                port:
+                  number: 80

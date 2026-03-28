@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Кредитный калькулятор</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="container">
+    <h1>Расчёт кредитоспособности</h1>
+
+    <form method="post">
+        <input name="age" type="number" min="18" max="85" placeholder="Возраст" required 
+               oninvalid="this.setCustomValidity('Введите возраст от 18 до 85 лет')" 
+               oninput="this.setCustomValidity('')">
+        <input name="income" type="number" placeholder="Доход">
+        <input name="job_exp" type="number" placeholder="Опыт (мес)">
+        <input name="loans" type="number" placeholder="Долги">
+
+        <select name="job">
+            <option value="stable">IT / Гос</option>
+            <option value="official">Официальная</option>
+            <option value="part">Частичная</option>
+            <option value="temp">Временная</option>
+            <option value="none">Безработный</option>
+        </select>
+
+        <select name="status">
+            <option value="single">Не женат/Не замужем</option>
+            <option value="married">Женат/Замужем</option>
+            <option value="divorced">Разведён(a)</option>
+        </select>
+
+        <button type="submit">Рассчитать</button>
+    </form>
+</div>
+
+</body>
+</html>

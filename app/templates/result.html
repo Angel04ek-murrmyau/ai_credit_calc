@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Результат</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="container result">
+    <h1>Результат</h1>
+
+    <p>Уровень риска: {{ risk }}</p>
+
+    <p class="{% if decision == 'Одобрено' %}approved{% else %}rejected{% endif %}">
+        {{ decision }}
+    </p>
+
+    <div class="ai-box">
+        <strong>Комментарий ИИ GigaChat:</strong>
+        <p>{{ comment }}</p>
+    </div>
+
+    <br>
+    <a href="/" style="color:#3b82f6;">← Назад</a>
+</div>
+
+</body>
+</html>
