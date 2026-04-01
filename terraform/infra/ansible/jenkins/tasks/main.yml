@@ -1,0 +1,158 @@
+---
+# tasks file for jenkins
+
+- name: Install required packages
+  apt:
+    name:
+      - gnupg
+      - curl
+      - apt-transport-https
+    state: present
+
+- name: Add jenkins gpg key
+  get_url:
+    url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+    dest: /etc/apt/keyrings/jenkins-keyring.asc
+    mode: '0644'
+
+- name: Add jenkins repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+    state: present
+    filename: jenkins
+    update_cache: yes
+
+- name: Install java
+  apt:
+    name: openjdk-17-jdk
+    state: present
+
+- name: Install jenkins
+  apt:
+    name: jenkins
+    state: present
+
+- name: Start and enable jenkins service
+  systemd:
+    name: jenkins
+    state: started
+    enabled: yes
+
+- name: Add docker repo key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add docker to sources.list.d
+  apt_repository:
+    repo: deb https://download.docker.com/linux/ubuntu jammy stable
+    state: present
+
+- name: Install docker
+  apt:
+    name: docker-ce
+    state: present
+
+- name: Start and enable docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Add jenkins user to docker group
+  user:
+    name: jenkins
+    group: docker
+    append: yes
+
+- name: Restart jenkins
+  systemd:
+    name: jenkins
+    state: restarted
+
+- name: Add kubernetes repo key
+  apt_key:
+    url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
+    state: present
+
+- name: Add kubernetes to sources.list.d
+  apt_repository:
+    repo: deb https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+    state: present
+
+- name: Install kubectl
+  apt:
+    update_cache: yes
+    name:
+      - kubectl
+    state: present
+
+- name: Create jenkins serviceaccount in Kubernetes
+  shell: |
+    kubectl create serviceaccount jenkins -n default || true
+    kubectl create clusterrolebinding jenkins-admin --clusterrole=cluster-admin --serviceaccount=default:jenkins || true
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+
+- name: Extract jenkins token
+  shell: |
+    SECRET_NAME=$(kubectl get serviceaccount jenkins -n default -o jsonpath="{.secrets[0].name}" --kubeconfig /home/ubuntu/.kube/config)
+    kubectl get secret $SECRET_NAME -n default -o jsonpath="{.data.token}" --kubeconfig /home/ubuntu/.kube/config | base64 --decode > /tmp/jenkins-token
+  args:
+    executable: /bin/bash
+
+- name: Ensure jenkins .kube directory exists
+  file:
+    path: /var/lib/jenkins/.kube
+    state: directory
+    owner: jenkins
+    group: jenkins
+    mode: '0700'
+
+- name: Read jenkins token into variable
+  shell: cat /tmp/jenkins-token
+  register: jenkins_token
+  args:
+    executable: /bin/bash
+
+- name: Create kubeconfig for jenkins
+  copy:
+    content: |
+      apiVersion: v1
+      kind: Config
+      clusters:
+      - cluster:
+          certificate-authority: /home/ubuntu/.kube/ca.crt
+          server: https://127.0.0.1:6443
+        name: kubernetes
+      contexts:
+      - context:
+          cluster: kubernetes
+          user: jenkins
+        name: jenkins-context
+      current-context: jenkins-context
+      users:
+      - name: jenkins
+        user:
+          token: "{{ jenkins_token.stdout }}"
+    dest: /var/lib/jenkins/.kube/config
+    owner: jenkins
+    group: jenkins
+    mode: '0600'
+
+- name: Ensure jenkins .kube directory exists
+  file:
+    path: /var/lib/jenkins/.kube
+    state: directory
+    owner: jenkins
+    group: jenkins
+    mode: '0700'
+
+- name: Copy all kube files to jenkins home
+  copy:
+    src: /home/ubuntu/.kube/
+    dest: /var/lib/jenkins/.kube/
+    owner: jenkins
+    group: jenkins
+    mode: '0600'
+    remote_src: yes

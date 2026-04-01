@@ -1,0 +1,13 @@
+- name: Setup kubernetes
+  hosts: kubernetes
+  become: true
+  gather_facts: true
+  roles:
+    - kubernetes
+
+- name: Setup jenkins CI/CD
+  hosts: jenkins
+  become: true
+  gather_facts: true
+  roles:
+    - jenkins

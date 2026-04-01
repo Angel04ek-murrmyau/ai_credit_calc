@@ -1,0 +1,344 @@
+---
+# tasks file for kubernetes
+- name: Disable swap
+  command: swapoff -a
+
+- name: Remove swap from fstab
+  lineinfile:
+    path: '/etc/fstab'
+    regexp: '\sswap\s'
+    state: 'absent'
+
+- name: Load kernel modules for k8s
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Enable IP forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+
+- name: Let bridge traffic pass through iptables
+  sysctl:
+    name: "{{ item }}"
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+  loop:
+    - net.bridge.bridge-nf-call-iptables
+    - net.bridge.bridge-nf-call-ip6tables
+
+- name: Install dependences
+  apt:
+    update_cache: yes
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - apt-transport-https
+      - lsb-release
+      - python3-kubernetes
+    state: present
+
+- name: Add docker repo key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add docker to sources.list.d
+  apt_repository:
+    repo: deb https://download.docker.com/linux/ubuntu jammy stable
+    state: present
+
+- name: Install containerd
+  apt:
+    name:
+      - containerd.io
+    state: present
+    update_cache: yes
+
+- name: Create containerd config directory
+  file:
+    path: /etc/containerd
+    state: directory
+
+- name: Generate containerd config
+  shell: containerd config default > /etc/containerd/config.toml
+
+- name: Set systemd cgroup driver in containerd
+  lineinfile:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    line: '            SystemdCgroup = true'
+
+- name: Restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+
+- name: Add kubernetes repo key
+  apt_key:
+    url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key
+    state: present
+
+- name: Add kubernetes to sources.list.d
+  apt_repository:
+    repo: deb https://pkgs.k8s.io/core:/stable:/v1.30/deb/ / 
+    state: present
+
+- name: Install kubernetes
+  apt:
+    update_cache: yes
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl      
+    state: present
+
+- name: Launch kubernetes
+  systemd:
+    name: kubelet
+    enabled: yes
+    state: restarted
+
+- name: Untaint master and install Ingress
+  shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/control-plane- || true
+    kubectl --kubeconfig /etc/kubernetes/admin.conf taint nodes --all node-role.kubernetes.io/master- || true
+    kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+  delegate_to: master
+  run_once: true
+  
+- name: Install node exporter
+  apt:
+    update_cache: yes
+    name: prometheus-node-exporter
+    state: present
+
+- name: Check if kubernetes is already initialized
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: kube_config
+  run_once: true
+  delegate_to: master
+
+- name: Wait for kubeadm init
+  pause:
+    prompt: "Если Вы запускаете плейбук в первый раз, то выполните kubeadm init и kubeadm join по инструкции в документации, и нажмите Enter."
+  run_once: true
+
+- name: Install flannel
+  shell: kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml --validate=false
+  delegate_to: master
+  run_once: true
+
+- name: Download helm
+  get_url:
+    url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    dest: /tmp/get_helm.sh
+    mode: '0777'
+
+- name: Install helm
+  command: /tmp/get_helm.sh
+
+- name: Label master node to match ingress selector
+  shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf label node {{ ansible_hostname }} kubernetes.io/hostname=master --overwrite
+  delegate_to: master
+  run_once: true
+
+- name: Restart ingress Controller to pick up new labels
+  shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf rollout restart deployment ingress-nginx-controller -n ingress-nginx
+  delegate_to: master
+  run_once: true
+
+- name: Add grafana repo
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: "https://grafana.github.io/helm-charts"
+  run_once: true
+  delegate_to: master
+
+- name: Add prometheus-community repo
+  kubernetes.core.helm_repository:
+    name: prometheus-community
+    repo_url: "https://prometheus-community.github.io/helm-charts"
+  run_once: true
+  delegate_to: master
+
+- name: Install kube-prometheus-stack
+  kubernetes.core.helm:
+    name: kube-prometheus-stack
+    chart_ref: prometheus-community/kube-prometheus-stack
+    release_namespace: monitoring
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    values:
+      prometheus:
+        prometheusSpec:
+          retention: 7d
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+      grafana:
+        adminPassword: admin
+        service:
+          type: NodePort
+          nodePort: 30300
+      alertmanager:
+        alertmanagerSpec:
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "100m"
+    wait: no
+  run_once: true
+  delegate_to: master
+
+- name: Wait for kube-prometheus-stack pods
+  shell: |
+    kubectl --kubeconfig /etc/kubernetes/admin.conf wait --namespace monitoring --for=condition=ready pod --selector=app.kubernetes.io/instance=kube-prometheus-stack --timeout=600s
+  delegate_to: master
+  run_once: true
+  ignore_errors: yes
+  register: prometheus_wait
+  until: prometheus_wait.rc == 0
+  retries: 3
+  delay: 30
+
+- name: Add loki repo
+  kubernetes.core.helm_repository:
+    name: loki
+    repo_url: "https://grafana.github.io/helm-charts"
+  run_once: true
+  delegate_to: master
+
+
+- name: Install loki 
+  kubernetes.core.helm:
+    name: loki
+    chart_ref: grafana/loki
+    release_namespace: monitoring
+    kubeconfig: /etc/kubernetes/admin.conf
+    values:
+      deploymentMode: SingleBinary
+      read: { replicas: 0 }
+      write: { replicas: 0 }
+      backend: { replicas: 0 }
+      singleBinary:
+        replicas: 1
+        persistence: { enabled: false }
+      test: { enabled: false }
+      lokiCanary: { enabled: false }
+      gateway: { enabled: false }
+      chunksCache: { enabled: false }
+      resultsCache: { enabled: false }
+      loki:
+        auth_enabled: false
+        podSecurityContext:
+          fsGroup: 10001
+          runAsGroup: 10001
+          runAsUser: 10001
+        containerSecurityContext:
+          readOnlyRootFilesystem: false
+        commonConfig:
+          replication_factor: 1
+          path_prefix: /tmp/loki
+        storage:
+          type: filesystem
+        rulerConfig:
+          storage:
+            type: local
+            local:
+              directory: /tmp/loki/rules
+          rule_path: /tmp/loki/prom-rules
+        schemaConfig:
+          configs:
+            - from: "2024-04-01"
+              store: tsdb
+              object_store: filesystem
+              schema: v13
+              index:
+                prefix: loki_index_
+                period: 24h
+        storage_config:
+          filesystem:
+            directory: /tmp/loki/chunks
+          tsdb_shipper:
+            active_index_directory: /tmp/loki/index
+            cache_location: /tmp/loki/index_cache
+        memberlist:
+          join_members: ["127.0.0.1"]
+      extraVolumes:
+        - name: var-loki-fix
+          emptyDir: {}
+      extraVolumeMounts:
+        - name: var-loki-fix
+          mountPath: /var/loki
+    wait: yes
+    timeout: 300s
+  run_once: true
+  delegate_to: master
+
+- name: Wait for Loki to be ready
+  shell: kubectl --kubeconfig /etc/kubernetes/admin.conf wait --namespace monitoring --for=condition=ready pod --selector=app.kubernetes.io/name=loki --timeout=300s
+  delegate_to: master
+  run_once: true
+  ignore_errors: yes
+
+- name: Install promtail
+  kubernetes.core.helm:
+    name: promtail
+    chart_ref: grafana/promtail
+    release_namespace: monitoring
+    create_namespace: true
+    kubeconfig: /etc/kubernetes/admin.conf
+    values:
+      config:
+        clients:
+          - url: "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push" 
+      daemonset:
+        enabled: true
+    wait: yes
+  run_once: true
+  delegate_to: master
+
+- name: Copy k8s manifests
+  copy:
+    src: ../../k8s/
+    dest: /home/ubuntu/k8s/
+  delegate_to: master
+  run_once: true
+
+- name: Remove broken ingress Admission webhook
+  shell: kubectl --kubeconfig /etc/kubernetes/admin.conf delete validatingwebhookconfiguration ingress-nginx-admission || true
+  delegate_to: master
+  run_once: true
+
+- name: Apply deployment and Service
+  command: kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f /home/ubuntu/k8s/k8s.yml --validate=false
+  delegate_to: master
+  run_once: true
+
+- name: Wait for pods to be ready
+  shell: kubectl --kubeconfig /etc/kubernetes/admin.conf wait --namespace default --for=condition=ready pod --selector=app=ai-credit-calc --timeout=120s
+  delegate_to: master
+  run_once: true
+  ignore_errors: yes
