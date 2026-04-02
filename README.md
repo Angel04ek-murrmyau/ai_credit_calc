@@ -132,6 +132,9 @@
 ## Ручной этап Ansible плейбука (Важно!)
 На этапе применения Ansible плейбука main.py с ролями kubernetes и service будет один ручной этап. Когда плейбук попросит обратиться в документацию, подключитесь по ssh к master ноде (```ssh ubuntu@<IP master ноды, который вы скопировали в inventory.ini файле>```), и выполните ```sudo kubeadm init --pod-network-cidr=10.244.0.0/16```. После этого, на master ноде необходимо выполнить следующие команды: ```mkdir -p $HOME/.kube``` ```sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config``` ```sudo chown $(id -u):$(id -g) $HOME/.kube/config```. Они описаны в выводе команды kubeadm init. Также в результате вывода этой команды Вы получите команду вида ```kubeadm join…``` и токен. Скопируйте команду полностью, подключитесь по ssh к двум worker нодам (ssh ubuntu@<IP worker ноды, который Вы скопировали в inventory.ini файле>). Выполните её, прописав в начале «sudo» на worker ноде. Для этой команды необходимы права суперпользователя. После этого нажмите Enter и плейбук продолжит выполняться в автоматическом режиме.
 
+## Ручной этап после завершения Jenkins job (Важно!)
+После завершения Jenkins job, подключившись по ssh к master серверу, в консоли нужно выполнить ```kubectl apply -f /home/ubuntu/k8s/k8s.yml``` и ```kubectl rollout restart deployment ai-credit-calc```, эти команды применяет k8s манифесты, и принудительно их развернут, перезапустив поды.
+
 
 
 
