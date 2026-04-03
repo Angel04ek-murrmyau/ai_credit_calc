@@ -11,12 +11,18 @@
     <h1>Расчёт кредитоспособности</h1>
 
     <form method="post">
-        <input name="age" type="number" min="18" max="85" placeholder="Возраст" required 
-               oninvalid="this.setCustomValidity('Введите возраст от 18 до 85 лет')" 
+        <input name="age" type="number" min="18" max="85" placeholder="Возраст" required
+               oninvalid="this.setCustomValidity('Введите возраст от 18 до 85 лет')"
                oninput="this.setCustomValidity('')">
-        <input name="income" type="number" placeholder="Доход">
-        <input name="job_exp" type="number" placeholder="Опыт (мес)">
-        <input name="loans" type="number" placeholder="Долги">
+        <input name="income" type="number" placeholder="Доход" required
+               oninvalid="this.setCustomValidity('Введите доход')"
+               oninput="this.setCustomValidity('')">
+        <input name="job_exp" type="number" placeholder="Опыт (мес)" required
+               oninvalid="this.setCustomValidity('Введите опыт работы')"
+               oninput="this.setCustomValidity('')">
+        <input name="loans" type="number" placeholder="Долги" required
+               oninvalid="this.setCustomValidity('Введите количество долгов')"
+               oninput="this.setCustomValidity('')">
 
         <select name="job">
             <option value="stable">IT / Гос</option>
